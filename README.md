@@ -1,2 +1,2 @@
 # mini-compression
-A mini compression implementation in Go
+A mini compression implementation in Go.
