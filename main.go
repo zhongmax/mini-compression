@@ -6,12 +6,12 @@ import (
 )
 
 func main() {
-	err := compressor.Compression("bible.txt", "zip.data")
+	err := compressor.Compression("./test/bible.txt", "./test/zip.data")
 	if err != nil {
 		fmt.Printf("compress failed, err: %s\n", err)
 		return
 	}
-	err = compressor.Decompression("zip.data", "bible_copy.txt")
+	err = compressor.Decompression("./test/zip.data", "./test/bible_copy.txt")
 	if err != nil {
 		fmt.Printf("decompress failed, err: %s\n", err)
 		return

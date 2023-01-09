@@ -107,6 +107,11 @@ func Compression(from, to string) (err error) {
 	return nil
 }
 
+func CompressionDir(from, to string) error {
+
+	return nil
+}
+
 func (c *compress) readData(from string) error {
 	f, err := os.Open(from)
 	if err != nil {

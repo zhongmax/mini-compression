@@ -77,6 +77,10 @@ func Decompression(src, dst string) (err error) {
 	return nil
 }
 
+func DecompressionDir(src, dst string) error {
+	return nil
+}
+
 func (d *decompress) readHead() (err error) {
 	d.codeLength, err = readInt(d.from)
 	fmt.Printf("code len: %d\n", d.codeLength)
