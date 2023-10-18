@@ -2,34 +2,89 @@ package compressor
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
 
 type compressFolder struct {
 	sourceFiles []fileMetadata
+	encodeMap   map[byte]string
+	countList   []int
+	root        *node
+	to          *os.File
+	dirLength   int64
 }
 
 type fileMetadata struct {
-	path    string
-	isDir   bool
-	mode    fs.FileMode
-	size    int64
-	modTime time.Time
+	absPath    string
+	path       string
+	pathLength int
+	isDir      bool
+	mode       fs.FileMode
+	size       int64
+	modTime    time.Time
+
+	cur byte
+	pos int
 }
 
 func newCompressFolder() *compressFolder {
-	return &compressFolder{}
+	return &compressFolder{
+		countList: make([]int, pSIZE),
+		encodeMap: make(map[byte]string),
+	}
 }
 
 func compressDir(from, to string) error {
 	c := newCompressFolder()
-	basePath := filepath.Base(from)
-	err := filepath.Walk(from, func(path string, info fs.FileInfo, err error) error {
+	err := c.readDir(from)
+	if err != nil {
+		return err
+	}
+	err = c.readData()
+	if err != nil {
+		return err
+	}
+	c.generateTree()
+	c.to, err = os.Create(to)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.to.Close() }()
+	var dirs, files []fileMetadata
+	for _, item := range c.sourceFiles {
+		if item.isDir {
+			dirs = append(dirs, item)
+		} else {
+			files = append(files, item)
+		}
+	}
+	err = c.writeHead()
+	if err != nil {
+		return err
+	}
+	err = c.writeDirs(dirs)
+	if err != nil {
+		return err
+	}
+	for _, meta := range files {
+		err = c.writeFile(meta)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *compressFolder) readDir(dirPath string) error {
+	basePath := filepath.Base(dirPath)
+	err := filepath.Walk(dirPath, func(path string, info fs.FileInfo, err error) error {
 		if err != nil {
 			log.Printf("access %s err: %s", path, err)
 			return err
@@ -38,47 +93,230 @@ func compressDir(from, to string) error {
 		if idx != -1 {
 			relPath := path[idx:]
 			c.sourceFiles = append(c.sourceFiles, fileMetadata{
-				path:    relPath,
-				isDir:   info.IsDir(),
-				mode:    info.Mode(),
-				size:    info.Size(),
-				modTime: info.ModTime(),
+				absPath:    path,
+				path:       relPath,
+				pathLength: len([]byte(relPath)),
+				isDir:      info.IsDir(),
+				mode:       info.Mode(),
+				size:       info.Size(),
+				modTime:    info.ModTime(),
 			})
 		}
 		return nil
 	})
 	if err != nil {
+		log.Printf("walk %s dir err: %s", dirPath, err)
 		return err
 	}
-	if !exist(to) {
-		err := os.MkdirAll(to, 0755)
+	return nil
+}
+
+func (c *compressFolder) readData() error {
+	for _, file := range c.sourceFiles {
+		if !file.isDir {
+			err := c.readFile(file.absPath)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (c *compressFolder) readFile(filePath string) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		log.Printf("open %s file err: %s", filePath, err)
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	b := make([]byte, 1024)
+	for {
+		n, err := f.Read(b)
 		if err != nil {
-			log.Printf("create target dir err: %s", err)
+			if err == io.EOF {
+				break
+			} else {
+				log.Printf("read file: %s err: %s", filePath, err)
+				return err
+			}
+		}
+
+		for i := 0; i < n; i++ {
+			c.countList[b[i]]++
+		}
+	}
+	return nil
+}
+
+func (c *compressFolder) generateTree() {
+	var (
+		leaves   []*node
+		traverse func(n *node, code uint64, bits byte)
+	)
+	for i := range c.countList {
+		if c.countList[i] == 0 {
+			continue
+		}
+		leaves = append(leaves, &node{
+			Val:   typeValue(i),
+			Count: c.countList[i],
+		})
+	}
+	c.root = build(leaves)
+	traverse = func(n *node, code uint64, bits byte) {
+		if n.Left == nil {
+			c.encodeMap[byte(n.Val)] = fmt.Sprintf("%0"+strconv.Itoa(int(bits))+"b", code)
+			return
+		}
+		bits++
+		traverse(n.Left, code<<1, bits)
+		traverse(n.Right, code<<1+1, bits)
+	}
+	traverse(c.root, 0, 0)
+}
+
+func (c *compressFolder) writeHead() (err error) {
+	// 前4个字节哈夫曼编码长度
+	// [哈夫曼编码长度]
+	err = c.writeInt(len(c.countList))
+	if err != nil {
+		log.Printf("write huffman length err: %s", err)
+		return err
+	}
+	for _, val := range c.countList {
+		err = c.writeInt(val)
+		if err != nil {
+			log.Printf("write huffman value err: %s", err)
 			return err
 		}
 	}
-	for _, file := range c.sourceFiles {
-		fmt.Println(file.path)
-		dstPath := filepath.Join(to, file.path)
-		if file.isDir {
-			err := os.MkdirAll(dstPath, file.mode)
-			if err != nil {
-				log.Printf("mkdir dstPath err: %s", err)
-				return err
-			}
-		} else {
-			_, err := os.Create(dstPath)
-			if err != nil {
-				log.Printf("create file err: %s", err)
-				return err
-			}
-			err = os.Chmod(dstPath, file.mode)
-			if err != nil {
-				log.Printf("file chmod er: %s", err)
+	return nil
+}
+
+func (c *compressFolder) writeDirs(meta []fileMetadata) (err error) {
+	var totalLength int64
+	for _, item := range meta {
+		// 前4个字节是文件夹的长度 int32
+		// 文件夹名称
+		// 4个字节 文件夹权限 uint32
+		err = c.writeInt(item.pathLength)
+		if err != nil {
+			log.Printf("write dir length err: %s", err)
+			return err
+		}
+		_, err = c.to.Write([]byte(item.path))
+		if err != nil {
+			log.Printf("write dir err: %s", err)
+			return err
+		}
+		err = c.writeInt(int(item.mode))
+		if err != nil {
+			log.Printf("write file mode err: %s", err)
+			return err
+		}
+		totalLength += int64((1 + len([]byte(item.path)) + 1) * 4)
+	}
+	c.dirLength = totalLength
+	return nil
+}
+
+func (c *compressFolder) writeFile(meta fileMetadata) (err error) {
+	// 前4个字节是文件名称的长度 int32
+	// [文件名称长度(包括路径)]
+	// 4个字节 文件权限 uint32
+	// 8个字节 原始文件大小 int64
+	// 8个字节 压缩后的数据长度 int64
+	err = c.writeInt(meta.pathLength)
+	if err != nil {
+		log.Printf("write filename length err: %s", err)
+		return err
+	}
+	_, err = c.to.Write([]byte(meta.path))
+	if err != nil {
+		log.Printf("write filename err: %s", err)
+		return err
+	}
+	err = c.writeInt(int(meta.mode))
+	if err != nil {
+		log.Printf("write file mode err: %s", err)
+		return err
+	}
+	err = c.writeInt(int(meta.size))
+	if err != nil {
+		log.Printf("write source file size err: %s", err)
+		return err
+	}
+	headOffset := int64((1 + len([]byte(meta.path)) + 1 + 1) * 4)
+	err = c.writeInt(0)
+	if err != nil {
+		return err
+	}
+	buf := make([]byte, 1024)
+	f, err := os.Open(meta.absPath)
+	if err != nil {
+		log.Printf("open %s file err: %s", meta.absPath, err)
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	var compressTotal int64
+	for {
+		n, err := f.Read(buf)
+		if err != nil {
+			if err == io.EOF {
+				break
+			} else {
 				return err
 			}
 		}
+		for i := 0; i < n; i++ {
+			str := c.encodeMap[buf[i]]
+			for j := 0; j < len(str); j++ {
+				compressTotal++
+				if str[j] == '0' {
+					err = meta.writeBits(c.to, 0)
+				} else {
+					err = meta.writeBits(c.to, 1)
+				}
+				if err != nil {
+					return err
+				}
+			}
+		}
 	}
-
+	if meta.pos > 0 {
+		for meta.pos != 8 {
+			meta.cur = meta.cur << 1
+			meta.pos++
+		}
+		_, err = c.to.Write([]byte{meta.cur})
+		if err != nil {
+			return err
+		}
+	}
+	_, err = c.to.Seek(headOffset, io.SeekStart)
+	if err != nil {
+		return err
+	}
+	err = c.writeInt(int(compressTotal))
+	if err != nil {
+		return err
+	}
 	return nil
+}
+
+func (c *compressFolder) writeInt(val int) (err error) {
+	_, err = c.to.Write([]byte{byte(val >> 24), byte(val >> 16), byte(val >> 8), byte(val)})
+	return err
+}
+
+func (m *fileMetadata) writeBits(f *os.File, val byte) (err error) {
+	const mod = 8
+	m.cur = (m.cur << 1) | val
+	m.pos++
+	if m.pos == mod {
+		_, err = f.Write([]byte{m.cur})
+		m.cur, m.pos = 0, 0
+	}
+	return err
 }
