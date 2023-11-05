@@ -6,7 +6,9 @@ import (
 )
 
 const (
-	pSIZE = 256
+	pSIZE            = 256
+	compressTypeFile = 0
+	compressTypeDir  = 1
 )
 
 func Compression(from, to string) (err error) {

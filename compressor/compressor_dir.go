@@ -13,12 +13,13 @@ import (
 )
 
 type compressFolder struct {
-	sourceFiles []fileMetadata
-	encodeMap   map[byte]string
-	countList   []int
-	root        *node
-	to          *os.File
-	dirLength   int64
+	sourceFiles   []fileMetadata
+	encodeMap     map[byte]string
+	countList     []int
+	root          *node
+	to            *os.File
+	dirLength     int64
+	currentOffset int
 }
 
 type fileMetadata struct {
@@ -69,16 +70,26 @@ func compressDir(from, to string) error {
 	if err != nil {
 		return err
 	}
+	pos, _ := c.to.Seek(0, io.SeekCurrent)
+	log.Printf("head写入完成偏移量: %d", pos)
 	err = c.writeDirs(dirs)
 	if err != nil {
 		return err
 	}
+	pos, _ = c.to.Seek(0, io.SeekCurrent)
+	log.Printf("dir写入完成偏移量: %d", pos)
+	// 写入有多少个文件
+	err = c.writeInt(len(files))
+	c.currentOffset += 1 * 4
+	log.Printf("currentOffset: %d\n", c.currentOffset)
 	for _, meta := range files {
 		err = c.writeFile(meta)
 		if err != nil {
 			return err
 		}
 	}
+	pos, _ = c.to.Seek(0, io.SeekCurrent)
+	log.Printf("file写入完成偏移量: %d", pos)
 	return nil
 }
 
@@ -177,7 +188,12 @@ func (c *compressFolder) generateTree() {
 }
 
 func (c *compressFolder) writeHead() (err error) {
-	// 前4个字节哈夫曼编码长度
+	// 设置压缩文件类型
+	err = c.writeInt(compressTypeDir)
+	if err != nil {
+		log.Printf("write compress type err: %s", err)
+		return err
+	}
 	// [哈夫曼编码长度]
 	err = c.writeInt(len(c.countList))
 	if err != nil {
@@ -191,23 +207,25 @@ func (c *compressFolder) writeHead() (err error) {
 			return err
 		}
 	}
+	c.currentOffset += (1 + 1 + len(c.countList)) * 4
 	return nil
 }
 
 func (c *compressFolder) writeDirs(meta []fileMetadata) (err error) {
-	var totalLength int64
+	var totalLength int
+	log.Printf("写入文件夹个数: %d\n", len(meta))
+	err = c.writeInt(len(meta))
+	if err != nil {
+		log.Printf("write dir number err: %s", err)
+		return err
+	}
 	for _, item := range meta {
 		// 前4个字节是文件夹的长度 int32
-		// 文件夹名称
 		// 4个字节 文件夹权限 uint32
+		// 文件夹名称
 		err = c.writeInt(item.pathLength)
 		if err != nil {
 			log.Printf("write dir length err: %s", err)
-			return err
-		}
-		_, err = c.to.Write([]byte(item.path))
-		if err != nil {
-			log.Printf("write dir err: %s", err)
 			return err
 		}
 		err = c.writeInt(int(item.mode))
@@ -215,9 +233,16 @@ func (c *compressFolder) writeDirs(meta []fileMetadata) (err error) {
 			log.Printf("write file mode err: %s", err)
 			return err
 		}
-		totalLength += int64((1 + len([]byte(item.path)) + 1) * 4)
+		_, err = c.to.Write([]byte(item.path))
+		if err != nil {
+			log.Printf("write dir err: %s", err)
+			return err
+		}
+		totalLength += (1+1)*4 + len([]byte(item.path))
 	}
-	c.dirLength = totalLength
+	c.currentOffset += 1 * 4
+	c.currentOffset += totalLength
+	// c.dirLength = totalLength
 	return nil
 }
 
@@ -225,8 +250,11 @@ func (c *compressFolder) writeFile(meta fileMetadata) (err error) {
 	// 前4个字节是文件名称的长度 int32
 	// [文件名称长度(包括路径)]
 	// 4个字节 文件权限 uint32
-	// 8个字节 原始文件大小 int64
-	// 8个字节 压缩后的数据长度 int64
+	// 4个字节 原始文件大小 int64
+	// 4个字节 压缩后的数据长度 int64
+	pos, _ := c.to.Seek(0, io.SeekCurrent)
+
+	log.Printf("%s写入文件名称长度, 偏移量: %d\n", meta.absPath, pos)
 	err = c.writeInt(meta.pathLength)
 	if err != nil {
 		log.Printf("write filename length err: %s", err)
@@ -247,7 +275,7 @@ func (c *compressFolder) writeFile(meta fileMetadata) (err error) {
 		log.Printf("write source file size err: %s", err)
 		return err
 	}
-	headOffset := int64((1 + len([]byte(meta.path)) + 1 + 1) * 4)
+	headOffset := int64(c.currentOffset + (1+1+1)*4 + len([]byte(meta.path)))
 	err = c.writeInt(0)
 	if err != nil {
 		return err
@@ -302,6 +330,16 @@ func (c *compressFolder) writeFile(meta fileMetadata) (err error) {
 	if err != nil {
 		return err
 	}
+	// 统计当前offset
+	c.currentOffset += (1+1+1)*4 + len([]byte(meta.path)) + int(compressTotal)
+	log.Printf("%s文件写入完成, 偏移量: %d\n", meta.absPath, c.currentOffset)
+	// 文件偏移量设置到末尾
+	_, err = c.to.Seek(0, io.SeekEnd)
+	if err != nil {
+		return err
+	}
+	pos, _ = c.to.Seek(0, io.SeekCurrent)
+	log.Printf("%s文件写入完成end, 偏移量: %d\n", meta.absPath, pos)
 	return nil
 }
 

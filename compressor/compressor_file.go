@@ -126,8 +126,12 @@ func (c *compress) readData(from string) error {
 	return nil
 }
 
-func (c *compress) writeHead() error {
-	err := c.writeInt(len(c.countList))
+func (c *compress) writeHead() (err error) {
+	err = c.writeInt(compressTypeFile)
+	if err != nil {
+		return err
+	}
+	err = c.writeInt(len(c.countList))
 	if err != nil {
 		return err
 	}

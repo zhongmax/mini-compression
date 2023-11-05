@@ -35,8 +35,9 @@ func TestValidator(t *testing.T) {
 	if err != nil {
 		log.Fatalf(err.Error())
 	}
-	//list := make([]int, 256)
-	for i := 1; i < intVal; i++ {
+	codeLength := int(binary.BigEndian.Uint32(buf1))
+	// list := make([]int, 256)
+	for i := 1; i < codeLength; i++ {
 		fmt.Printf("s: %d, e: %d\n", (i-1)*4, i*4)
 		itemBuf := buf1[(i-1)*4 : i*4]
 		itemVal := int(binary.BigEndian.Uint32(itemBuf))
