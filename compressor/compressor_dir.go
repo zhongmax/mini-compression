@@ -31,8 +31,9 @@ type fileMetadata struct {
 	size       int64
 	modTime    time.Time
 
-	cur byte
-	pos int
+	cur           byte
+	pos           int
+	compressTotal int64
 }
 
 func newCompressFolder() *compressFolder {
@@ -43,6 +44,7 @@ func newCompressFolder() *compressFolder {
 }
 
 func compressDir(from, to string) error {
+	var pos int64
 	c := newCompressFolder()
 	err := c.readDir(from)
 	if err != nil {
@@ -66,22 +68,28 @@ func compressDir(from, to string) error {
 			files = append(files, item)
 		}
 	}
+	pos, _ = c.to.Seek(0, io.SeekCurrent)
+	log.Printf("head写入前, 文件偏移量: %d, offset: %d", pos, c.currentOffset)
 	err = c.writeHead()
 	if err != nil {
 		return err
 	}
-	pos, _ := c.to.Seek(0, io.SeekCurrent)
-	log.Printf("head写入完成偏移量: %d", pos)
+	pos, _ = c.to.Seek(0, io.SeekCurrent)
+	log.Printf("head写入后, 文件偏移量: %d, offset: %d", pos, c.currentOffset)
+	log.Printf("写入%d个文件夹", len(dirs))
+	log.Printf("dir写入前, 文件偏移量: %d, offset: %d", pos, c.currentOffset)
 	err = c.writeDirs(dirs)
 	if err != nil {
 		return err
 	}
 	pos, _ = c.to.Seek(0, io.SeekCurrent)
-	log.Printf("dir写入完成偏移量: %d", pos)
+	log.Printf("dir写入后, 文件偏移量: %d, offset: %d", pos, c.currentOffset)
 	// 写入有多少个文件
+	log.Printf("写入%d个文件", len(files))
 	err = c.writeInt(len(files))
 	c.currentOffset += 1 * 4
-	log.Printf("currentOffset: %d\n", c.currentOffset)
+	pos, _ = c.to.Seek(0, io.SeekCurrent)
+	log.Printf("file写入前, 文件偏移量: %d, offset: %d", pos, c.currentOffset)
 	for _, meta := range files {
 		err = c.writeFile(meta)
 		if err != nil {
@@ -89,7 +97,7 @@ func compressDir(from, to string) error {
 		}
 	}
 	pos, _ = c.to.Seek(0, io.SeekCurrent)
-	log.Printf("file写入完成偏移量: %d", pos)
+	log.Printf("file写入完成偏移量: %d, offset: %d", pos, c.currentOffset)
 	return nil
 }
 
@@ -213,7 +221,6 @@ func (c *compressFolder) writeHead() (err error) {
 
 func (c *compressFolder) writeDirs(meta []fileMetadata) (err error) {
 	var totalLength int
-	log.Printf("写入文件夹个数: %d\n", len(meta))
 	err = c.writeInt(len(meta))
 	if err != nil {
 		log.Printf("write dir number err: %s", err)
@@ -252,9 +259,6 @@ func (c *compressFolder) writeFile(meta fileMetadata) (err error) {
 	// 4个字节 文件权限 uint32
 	// 4个字节 原始文件大小 int64
 	// 4个字节 压缩后的数据长度 int64
-	pos, _ := c.to.Seek(0, io.SeekCurrent)
-
-	log.Printf("%s写入文件名称长度, 偏移量: %d\n", meta.absPath, pos)
 	err = c.writeInt(meta.pathLength)
 	if err != nil {
 		log.Printf("write filename length err: %s", err)
@@ -276,6 +280,12 @@ func (c *compressFolder) writeFile(meta fileMetadata) (err error) {
 		return err
 	}
 	headOffset := int64(c.currentOffset + (1+1+1)*4 + len([]byte(meta.path)))
+	err = c.writeInt(0)
+	// 该位用于记录总共写入了多少字节
+	if err != nil {
+		return err
+	}
+	// 该位用于记录总结写入了多少字符, 用于后续解码时用
 	err = c.writeInt(0)
 	if err != nil {
 		return err
@@ -317,12 +327,23 @@ func (c *compressFolder) writeFile(meta fileMetadata) (err error) {
 			meta.cur = meta.cur << 1
 			meta.pos++
 		}
+		meta.compressTotal++
 		_, err = c.to.Write([]byte{meta.cur})
 		if err != nil {
 			return err
 		}
 	}
-	_, err = c.to.Seek(headOffset, io.SeekStart)
+	pos, _ := c.to.Seek(0, io.SeekCurrent)
+	// 统计当前offset
+	c.currentOffset += (1+1+1+1+1)*4 + len([]byte(meta.path)) + int(meta.compressTotal)
+	log.Printf("%s文件写入完毕, 当前偏移量: %d, offset: %d", meta.path, pos, c.currentOffset)
+	log.Printf("%s文件, size: %d, compressTotal: %d, compressBits: %d", meta.path, meta.size, meta.compressTotal, compressTotal)
+	pos, err = c.to.Seek(headOffset, io.SeekStart)
+	if err != nil {
+		return err
+	}
+	log.Printf("文件偏移量移动到: %d", pos)
+	err = c.writeInt(int(meta.compressTotal))
 	if err != nil {
 		return err
 	}
@@ -330,16 +351,12 @@ func (c *compressFolder) writeFile(meta fileMetadata) (err error) {
 	if err != nil {
 		return err
 	}
-	// 统计当前offset
-	c.currentOffset += (1+1+1)*4 + len([]byte(meta.path)) + int(compressTotal)
-	log.Printf("%s文件写入完成, 偏移量: %d\n", meta.absPath, c.currentOffset)
 	// 文件偏移量设置到末尾
-	_, err = c.to.Seek(0, io.SeekEnd)
+	pos, err = c.to.Seek(0, io.SeekEnd)
 	if err != nil {
 		return err
 	}
-	pos, _ = c.to.Seek(0, io.SeekCurrent)
-	log.Printf("%s文件写入完成end, 偏移量: %d\n", meta.absPath, pos)
+	log.Printf("文件偏移量移动到文件末尾: %d", pos)
 	return nil
 }
 
@@ -353,6 +370,7 @@ func (m *fileMetadata) writeBits(f *os.File, val byte) (err error) {
 	m.cur = (m.cur << 1) | val
 	m.pos++
 	if m.pos == mod {
+		m.compressTotal++
 		_, err = f.Write([]byte{m.cur})
 		m.cur, m.pos = 0, 0
 	}

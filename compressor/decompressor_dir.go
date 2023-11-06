@@ -1,7 +1,6 @@
 package compressor
 
 import (
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -25,27 +24,34 @@ func newDecompressFolder(dstPath string) *decompressFolder {
 }
 
 func decompressDir(src, dst string) (err error) {
+	var pos int64
 	decompress := newDecompressFolder(dst)
 	decompress.from, err = os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = decompress.from.Close() }()
+	pos, _ = decompress.from.Seek(0, io.SeekCurrent)
+	log.Printf("head前, 文件偏移量: %d", pos)
 	err = decompress.readHead()
 	if err != nil {
 		return err
 	}
-	pos, _ := decompress.from.Seek(0, io.SeekCurrent)
-	log.Printf("headHead读取偏移量: %d", pos)
+	pos, _ = decompress.from.Seek(0, io.SeekCurrent)
+	log.Printf("head后, 文件偏移量: %d", pos)
 	decompress.generateTree()
 	if exist(dst) {
 		_ = os.RemoveAll(dst)
 	}
 	_ = os.MkdirAll(dst, 0755)
+	pos, _ = decompress.from.Seek(0, io.SeekCurrent)
+	log.Printf("dir前, 文件偏移量: %d", pos)
 	err = decompress.rebuildDirs()
 	if err != nil {
 		return err
 	}
+	pos, _ = decompress.from.Seek(0, io.SeekCurrent)
+	log.Printf("dir后, 文件偏移量: %d", pos)
 	err = decompress.rebuildFiles()
 	if err != nil {
 		return err
@@ -64,7 +70,6 @@ func (d *decompressFolder) readHead() (err error) {
 		log.Printf("read int err: %s", err)
 		return err
 	}
-	fmt.Printf("code len: %d\n", d.codeLength)
 	for i := 0; i < d.codeLength; i++ {
 		d.codeList[i], err = readInt(d.from)
 		if err != nil {
@@ -150,8 +155,13 @@ func (d *decompressFolder) rebuildFiles() error {
 		if err != nil {
 			return err
 		}
-		log.Printf("file size: %d\n", compressSize)
-		err = d.buildFile(filepath.Join(d.targetPath, string(buf)), compressSize)
+		log.Printf("compressSize: %d\n", compressSize)
+		compressBits, err := readInt(d.from)
+		if err != nil {
+			return err
+		}
+		log.Printf("compressBits: %d\n", compressBits)
+		err = d.buildFile(filepath.Join(d.targetPath, string(buf)), compressSize, compressBits)
 		if err != nil {
 			return err
 		}
@@ -161,7 +171,7 @@ func (d *decompressFolder) rebuildFiles() error {
 	return nil
 }
 
-func (d *decompressFolder) buildFile(fileName string, compressTotal int) error {
+func (d *decompressFolder) buildFile(fileName string, compressTotal int, compressBits int) error {
 	targetFile, err := os.Create(fileName)
 	if err != nil {
 		return err
@@ -169,16 +179,22 @@ func (d *decompressFolder) buildFile(fileName string, compressTotal int) error {
 	defer func() { _ = targetFile.Close() }()
 	processed := 0
 	tmp := d.root
-	buf := make([]byte, 1024)
+	var buf []byte
 	lastBuf := []byte{}
 	useLastBuf := false
 	rangIdx := 0
-	if compressTotal/1024 == 0 {
-		rangIdx = compressTotal / 1024
+	if compressTotal > 1024 {
+		buf = make([]byte, 1024)
+		if compressTotal/1024 == 0 {
+			rangIdx = compressTotal / 1024
+		} else {
+			rangIdx = compressTotal/1024 + 1
+			lastBuf = make([]byte, compressTotal%1024)
+			useLastBuf = true
+		}
 	} else {
-		rangIdx = compressTotal/1024 + 1
-		lastBuf = make([]byte, compressTotal%1024)
-		useLastBuf = true
+		buf = make([]byte, compressTotal)
+		rangIdx = 1
 	}
 
 	for i := 0; i < rangIdx; i++ {
@@ -197,7 +213,7 @@ func (d *decompressFolder) buildFile(fileName string, compressTotal int) error {
 		}
 		for i := 0; i < n; i++ {
 			b := buf[i]
-			for i := 0; i < min(compressTotal-processed, 8); i++ {
+			for i := 0; i < min(compressBits-processed, 8); i++ {
 				if int(b&(1<<(8-i-1))) != 0 {
 					tmp = tmp.Right
 				} else {
