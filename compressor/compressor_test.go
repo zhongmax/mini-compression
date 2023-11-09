@@ -5,7 +5,7 @@ import (
 )
 
 func TestCompression(t *testing.T) {
-	err := Compression("../test/bible.txt", "../test/zip.data")
+	err := Compression("../test/test.txt", "../test/test.data")
 	if err != nil {
 		t.Fatal(err)
 	}

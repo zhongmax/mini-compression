@@ -9,7 +9,7 @@ import (
 )
 
 func TestCompressDir(t *testing.T) {
-	err := compressDir("../test/compress_dir", "../test/dir.data")
+	err := compressDir("../test/compress_dir", "../test/compress_dir.data")
 	if err != nil {
 		log.Fatalf("compressDir err: %s", err)
 	}

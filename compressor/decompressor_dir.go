@@ -1,10 +1,12 @@
 package compressor
 
 import (
+	"bufio"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 )
 
 type decompressFolder struct {
@@ -183,6 +185,7 @@ func (d *decompressFolder) buildFile(fileName string, compressTotal int, compres
 	lastBuf := []byte{}
 	useLastBuf := false
 	rangIdx := 0
+	targetInts := []int{}
 	if compressTotal > 1024 {
 		buf = make([]byte, 1024)
 		if compressTotal/1024 == 0 {
@@ -199,8 +202,10 @@ func (d *decompressFolder) buildFile(fileName string, compressTotal int, compres
 
 	for i := 0; i < rangIdx; i++ {
 		var n int
+		lastIdx := false
 		if i+1 == rangIdx && useLastBuf {
 			n, err = d.from.Read(lastBuf)
+			lastIdx = true
 		} else {
 			n, err = d.from.Read(buf)
 		}
@@ -212,7 +217,12 @@ func (d *decompressFolder) buildFile(fileName string, compressTotal int, compres
 			}
 		}
 		for i := 0; i < n; i++ {
-			b := buf[i]
+			var b byte
+			if lastIdx {
+				b = lastBuf[i]
+			} else {
+				b = buf[i]
+			}
 			for i := 0; i < min(compressBits-processed, 8); i++ {
 				if int(b&(1<<(8-i-1))) != 0 {
 					tmp = tmp.Right
@@ -220,6 +230,7 @@ func (d *decompressFolder) buildFile(fileName string, compressTotal int, compres
 					tmp = tmp.Left
 				}
 				if tmp.Left == nil {
+					targetInts = append(targetInts, int(tmp.Val))
 					_, err = targetFile.Write([]byte{byte(tmp.Val)})
 					if err != nil {
 						return err
@@ -230,5 +241,37 @@ func (d *decompressFolder) buildFile(fileName string, compressTotal int, compres
 			processed += 8
 		}
 	}
+
+	// 打开文件
+	file, _ := os.Create("target_dir.txt")
+	defer file.Close() // 确保在函数结束时关闭文件
+
+	// 创建一个Buffered Writer
+	writer := bufio.NewWriter(file)
+
+	// 遍历int数组，将每个数字写入文件
+	for i, number := range targetInts {
+		// 将int转换为string
+		s := strconv.Itoa(number)
+		// 写入文件，加上换行符
+		if i%20 == 0 {
+			_, err := writer.WriteString(s + "\n")
+			if err != nil {
+				panic(err)
+			}
+		} else {
+			_, err := writer.WriteString(s + " ")
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
+
+	// 确保所有的数据都写入文件
+	err = writer.Flush()
+	if err != nil {
+		panic(err)
+	}
+
 	return nil
 }

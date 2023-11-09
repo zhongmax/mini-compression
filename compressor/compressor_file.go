@@ -1,6 +1,7 @@
 package compressor
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,8 @@ type compress struct {
 	to            *os.File
 	pos           int
 	cur           byte
+	writeTime     int
+	writeInts     []int
 }
 
 func compressFile(from, to string) error {
@@ -75,6 +78,8 @@ func compressFile(from, to string) error {
 			compress.cur = compress.cur << 1
 			compress.pos++
 		}
+		compress.writeTime++
+		compress.writeInts = append(compress.writeInts, int(compress.cur))
 		_, err = compress.to.Write([]byte{compress.cur})
 		if err != nil {
 			return err
@@ -89,7 +94,38 @@ func compressFile(from, to string) error {
 		return fmt.Errorf("write compress total failed, err: %s", err)
 	}
 	fmt.Printf("compress total: %d\n", compress.compressTotal)
+	fmt.Printf("write time: %d\n", compress.writeTime)
 	fmt.Printf("cost: %0.2fs, compression success!\n", time.Since(start).Seconds())
+	// 打开文件
+	file, _ := os.Create("numbers_file.txt")
+	defer file.Close() // 确保在函数结束时关闭文件
+
+	// 创建一个Buffered Writer
+	writer := bufio.NewWriter(file)
+
+	// 遍历int数组，将每个数字写入文件
+	for i, number := range compress.writeInts {
+		// 将int转换为string
+		s := strconv.Itoa(number)
+		// 写入文件，加上换行符
+		if i%20 == 0 {
+			_, err := writer.WriteString(s + "\n")
+			if err != nil {
+				panic(err)
+			}
+		} else {
+			_, err := writer.WriteString(s + " ")
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
+
+	// 确保所有的数据都写入文件
+	err = writer.Flush()
+	if err != nil {
+		panic(err)
+	}
 	return nil
 }
 
@@ -141,7 +177,7 @@ func (c *compress) writeHead() (err error) {
 			return err
 		}
 	}
-	c.headOffset = int64((1 + len(c.countList)) * 4)
+	c.headOffset = int64((1 + 1 + len(c.countList)) * 4)
 	fmt.Printf("head offset: %d\n", c.headOffset)
 	err = c.writeInt(0)
 	if err != nil {
@@ -161,6 +197,8 @@ func (c *compress) writeBits(val int) (err error) {
 	c.pos++
 	c.compressTotal++
 	if c.pos == mod {
+		c.writeTime++
+		c.writeInts = append(c.writeInts, int(c.cur))
 		_, err = c.to.Write([]byte{c.cur})
 		c.cur, c.pos = 0, 0
 	}

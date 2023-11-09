@@ -5,7 +5,7 @@ import (
 )
 
 func TestDecompression(t *testing.T) {
-	if err := Decompression("../test/zip.data", "../test/bible_copy.txt"); err != nil {
+	if err := Decompression("../test/test.data", "../test/test_copy.txt"); err != nil {
 		t.Fatal(err)
 	}
 	t.Log("success")

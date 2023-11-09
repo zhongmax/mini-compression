@@ -1,10 +1,12 @@
 package compressor
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -45,9 +47,12 @@ func decompressFile(src, dst string) (err error) {
 	processed := 0
 	buf := make([]byte, 1024)
 	tmp := decompress.root
-
+	targetInts := []int{}
 	for {
 		n, err := decompress.from.Read(buf)
+		if n != 1024 {
+			fmt.Println(n)
+		}
 		if err != nil {
 			if err == io.EOF {
 				break
@@ -64,6 +69,7 @@ func decompressFile(src, dst string) (err error) {
 					tmp = tmp.Left
 				}
 				if tmp.Left == nil { // leaf
+					targetInts = append(targetInts, int(tmp.Val))
 					_, err = decompress.target.Write([]byte{byte(tmp.Val)})
 					if err != nil {
 						return err
@@ -75,6 +81,38 @@ func decompressFile(src, dst string) (err error) {
 		}
 	}
 	fmt.Printf("cost: %0.2fs, decompression success!\n", time.Since(start).Seconds())
+
+	// 打开文件
+	file, _ := os.Create("target_file.txt")
+	defer file.Close() // 确保在函数结束时关闭文件
+
+	// 创建一个Buffered Writer
+	writer := bufio.NewWriter(file)
+
+	// 遍历int数组，将每个数字写入文件
+	for i, number := range targetInts {
+		// 将int转换为string
+		s := strconv.Itoa(number)
+		// 写入文件，加上换行符
+		if i%20 == 0 {
+			_, err := writer.WriteString(s + "\n")
+			if err != nil {
+				panic(err)
+			}
+		} else {
+			_, err := writer.WriteString(s + " ")
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
+
+	// 确保所有的数据都写入文件
+	err = writer.Flush()
+	if err != nil {
+		panic(err)
+	}
+
 	return nil
 }
 

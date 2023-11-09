@@ -1,6 +1,7 @@
 package compressor
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"io/fs"
@@ -34,6 +35,7 @@ type fileMetadata struct {
 	cur           byte
 	pos           int
 	compressTotal int64
+	writeInts     []int
 }
 
 func newCompressFolder() *compressFolder {
@@ -259,6 +261,10 @@ func (c *compressFolder) writeFile(meta fileMetadata) (err error) {
 	// 4个字节 文件权限 uint32
 	// 4个字节 原始文件大小 int64
 	// 4个字节 压缩后的数据长度 int64
+	// debug := false
+	// if strings.Contains(meta.absPath, "bible.txt") {
+	// 	debug = true
+	// }
 	err = c.writeInt(meta.pathLength)
 	if err != nil {
 		log.Printf("write filename length err: %s", err)
@@ -327,6 +333,7 @@ func (c *compressFolder) writeFile(meta fileMetadata) (err error) {
 			meta.cur = meta.cur << 1
 			meta.pos++
 		}
+		meta.writeInts = append(meta.writeInts, int(meta.cur))
 		meta.compressTotal++
 		_, err = c.to.Write([]byte{meta.cur})
 		if err != nil {
@@ -357,6 +364,37 @@ func (c *compressFolder) writeFile(meta fileMetadata) (err error) {
 		return err
 	}
 	log.Printf("文件偏移量移动到文件末尾: %d", pos)
+
+	// 打开文件
+	file, _ := os.Create("numbers_dir.txt")
+	defer file.Close() // 确保在函数结束时关闭文件
+
+	// 创建一个Buffered Writer
+	writer := bufio.NewWriter(file)
+
+	// 遍历int数组，将每个数字写入文件
+	for i, number := range meta.writeInts {
+		// 将int转换为string
+		s := strconv.Itoa(number)
+		// 写入文件，加上换行符
+		if i%20 == 0 {
+			_, err := writer.WriteString(s + "\n")
+			if err != nil {
+				panic(err)
+			}
+		} else {
+			_, err := writer.WriteString(s + " ")
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
+
+	// 确保所有的数据都写入文件
+	err = writer.Flush()
+	if err != nil {
+		panic(err)
+	}
 	return nil
 }
 
@@ -371,6 +409,7 @@ func (m *fileMetadata) writeBits(f *os.File, val byte) (err error) {
 	m.pos++
 	if m.pos == mod {
 		m.compressTotal++
+		m.writeInts = append(m.writeInts, int(m.cur))
 		_, err = f.Write([]byte{m.cur})
 		m.cur, m.pos = 0, 0
 	}

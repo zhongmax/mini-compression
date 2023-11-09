@@ -16,9 +16,9 @@ func Compression(from, to string) (err error) {
 		return fmt.Errorf("%s is not exist", from)
 	}
 	if isDir(from) {
-		err = compressFile(from, to)
-	} else {
 		err = compressDir(from, to)
+	} else {
+		err = compressFile(from, to)
 	}
 	if err != nil {
 		return fmt.Errorf("compress %s err: %s", from, err)
